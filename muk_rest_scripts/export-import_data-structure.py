@@ -1,6 +1,7 @@
 import json
 import sys
 import argparse
+import re
 import time
 from datetime import datetime, timezone, timedelta
 import random
@@ -79,7 +80,8 @@ class RestAPI:
         We add a security time shift to assure the token does not expire within the
         time until the request will be sent.
         """
-        if not self.access_token or self.token_expiration_date - timedelta(seconds=10) <= fields.Datetime.now():
+        if not self.access_token or \
+                    self.token_expiration_date - timedelta(seconds=10) <= fields.Datetime.now():
             if self.verbosity > 2:
                 print('request new token')
             self._generate_rest_token()
@@ -380,11 +382,13 @@ class DataStructureSync:
             if self.verbosity > 2:
                 print(f"using token url {self.token_url}")
         else:
-            raise Exception("ERROR: could not find connection {} in credentials file {}".format(connection, cred_file))
+            raise Exception("ERROR: could not find connection {} in credentials file {}".format(
+                                connection, cred_file_name))
         return True
 
 
-    def write_scaffold_credentials(self, cred_file_name='example_credentials.json', connection='example_connection'):
+    def write_scaffold_credentials(self, cred_file_name='example_credentials.json', 
+                                   connection='example_connection'):
         credentials = {
           "odoo-16_demo": {
             "host_url": "https://odoo-16.example.com",
@@ -438,6 +442,35 @@ class DataStructureSync:
         if self.verbosity > 1:
             pprint(self.odoo_api.execute(''))
             pprint(self.odoo_api.execute('/user'))
+
+
+    def export_structures(self, data_structure_names=[], data_file_name=None, 
+                        export_meta=False, export_no_import=False, export_ilike=False):
+        operator = 'ilike' if export_ilike else '='
+        domain = (len(data_structure_names)-1) * ['|'] + [['name', operator, s] for s in data_structure_names]
+        if self.verbosity > 1:
+            print(f"INFO: data.structure to export {domain}")
+        data = {
+            'model': "data.structure",
+            'domain': json.dumps(domain),
+            'fields': json.dumps(['name']),
+        }
+        if self.verbosity >= 2:
+            pprint(data)
+        response = self.odoo_api.execute('search_read', type="GET", data=data)
+        if self.verbosity >= 1:
+            print("Response:")
+            pprint(response)
+        for r in response:
+            pprint(r)
+            structure = r.get('name', '')
+            file_name = re.sub(r'[^0-9a-zA-Z]',r'',structure)
+            if data_file_name:
+                file_name = data_file_name.replace('{}',file_name)
+            if file_name[-5].lower() != '.json':
+                file_name = f"{file_name}.json"
+            self.export_structure(data_structure_name=structure, data_file_name=file_name, 
+                                    export_meta=export_meta, export_no_import=export_no_import)
 
 
     def export_structure(self, data_structure_name=None, data_file_name=None,
@@ -514,7 +547,8 @@ class DataStructureSync:
         pprint(data_structure)
         with open(data_file_name, 'w') as data_structure_file:
             json.dump(data_structure, data_structure_file, indent=2)
-        print(f"INFO: the data structure {data_structure_name} has been read and written to the file {data_file_name}")
+        print(f"INFO: the data structure {data_structure_name} "
+                "has been read and written to the file {data_file_name}")
 
 
     def read_generator_structure(self, generator_id=None, fields=[]):
@@ -614,13 +648,13 @@ class DataStructureSync:
         if not 'data_structure' in data_structure:
             print(f"ERROR: could not find data_structure in data from {data_file_name}, aborting.")
 
-        # now build the structure in a way it can be used to be sent to Odoo
-        # for m2o fields we need to remove the list and use just the id
-        # for o2m fields we need to create new records on the fly using the list of tuples
-        #   o2m_filed_ids = [(0, 0, {'field1': 'value_A1', 'field2': 'value_A2'})
-        #                   (0, 0, {'field1': 'value_B1', 'field2': 'value_B2'})]
-        # the m2m field uses existing records, so we handle it like a list of m2o
-        # also not used (meta) fields like id, create/write date/user will not be used
+        # the value is to directly create the whole structure in Oddo in one call
+        # for m2o fields remove the list and use just the id
+        # for o2m fields create new records on the fly using the list of tuples notation (0, 0, x)
+        #   o2m_field_ids = [(0, 0, {'field1': 'value_A1', 'field2': 'value_A2'})
+        #                    (0, 0, {'field1': 'value_B1', 'field2': 'value_B2'})]
+        # the (only) m2m field is not importable (otherwise it'd be like a list of m2o)
+        # meta and no-import fields like id, create/write date/user are imported
 
         # start with the simple fields
         data_structure_values = {k: v for k, v in data_structure['data_structure'].items() \
@@ -663,15 +697,18 @@ class DataStructureSync:
 
     def create_generator_tuple(self, generator_id=None, generator_structures={}, language_mappings={}):
         if self.verbosity >= 3:
-            print(f"create_generator_tuple: build generator {generator_id} from {generator_structures.keys()}")
+            print(f"create_generator_tuple: build generator {generator_id} "
+                   "from {generator_structures.keys()}")
         if not generator_id or not generator_structures or not generator_id in generator_structures:
             print("create_generator_tuple: missing data")
             return []
-        # start with the simple fields
-        generator_structure = {k: v for k, v in generator_structures[generator_id].items() if k in self.generator_structure_fields_simple}
-        # as the m2o fields are exported as a list of id and display_name if set at all, we only need the id
-        generator_structure.update({k: v[0] for k, v in generator_structures[generator_id].items() if k in self.generator_structure_fields_m2o and type(v) == list})
-        # now for the o2m first empty lists are added, to fill them next
+        # the simple fields are added as stored
+        generator_structure = {k: v for k, v in generator_structures[generator_id].items() 
+                                        if k in self.generator_structure_fields_simple}
+        # as the m2o fields are exported as a list of id and display_name if set at all, only the id is used
+        generator_structure.update({k: v[0] for k, v in generator_structures[generator_id].items() 
+                                        if k in self.generator_structure_fields_m2o and type(v) == list})
+        # for the o2m first empty lists are added, to populate them next
         generator_structure.update({k: [] for k in self.generator_structure_fields_o2m})
         # for the language mapping o2m new records are added using the tuples
         for language_mapping in generator_structures[generator_id].get('lang_mapping_ids', []):
@@ -679,9 +716,10 @@ class DataStructureSync:
                             'keyword': language_mappings[str(language_mapping)]['keyword'],
                             'lang_id': language_mappings[str(language_mapping)]['lang_id'][0],
                             })]
-        # for the o2m child_ids it needs recursing to fill the lists
+        # for the o2m child_ids list are populated recursively
         for child_id in generator_structures[generator_id].get('child_ids', []):
-            generator_structure['child_ids'] += [(0, 0, self.create_generator_tuple(generator_id=str(child_id), 
+            generator_structure['child_ids'] += [(0, 0, 
+                                self.create_generator_tuple(generator_id=str(child_id), 
                                 generator_structures=generator_structures, 
                                 language_mappings=language_mappings))]
         return generator_structure
@@ -693,13 +731,15 @@ class DataStructureSync:
         if not parser_id or not parser_structures or not parser_id in parser_structures:
             print("create_parser_tuple: missing data")
             return []
-        # start with the simple fields
-        parser_structure = {k: v for k, v in parser_structures[parser_id].items() if k in self.parser_structure_fields_simple}
-        # as the m2o fields are exported as a list of id and display_name if set at all, we only need the id
-        parser_structure.update({k: v[0] for k, v in parser_structures[parser_id].items() if k in self.parser_structure_fields_m2o and type(v) == list})
-        # now for the o2m first empty lists are added, to fill them next
+        # the simple fields are added as stored
+        parser_structure = {k: v for k, v in parser_structures[parser_id].items() 
+                                        if k in self.parser_structure_fields_simple}
+        # as the m2o fields are exported as a list of id and display_name if set at all, only the id is used
+        parser_structure.update({k: v[0] for k, v in parser_structures[parser_id].items() 
+                                        if k in self.parser_structure_fields_m2o and type(v) == list})
+        # for the o2m first empty lists are added, to populate them next
         parser_structure.update({k: [] for k in self.parser_structure_fields_o2m})
-        # for the o2m child_ids it needs recursing to fill the lists
+        # for the o2m child_ids list are populated recursively
         for child_id in parser_structures[parser_id].get('child_ids', []):
             parser_structure['child_ids'] += [(0, 0, self.create_parser_tuple(parser_id=str(child_id), 
                                 parser_structures=parser_structures))]
@@ -719,22 +759,19 @@ class DataStructureSync:
 
 # functions for subparser
 def export_structure(odoosync, args):
-    #print("order update was chosen")
-    odoosync.export_structure(data_structure_name=args.structure, data_file_name=args.data_file, 
-                                export_meta=args.export_meta, export_no_import=args.export_no_import)
+    odoosync.export_structures(data_structure_names=args.structure, data_file_name=args.datafile, 
+                            export_meta=args.export_meta, export_no_import=args.export_no_import, 
+                            export_ilike=args.export_ilike)
 
 def create_structure(odoosync, args):
-    #print("create was chosen")
-    odoosync.create_structure(data_structure_name=args.structure, data_file_name=args.data_file)
+    odoosync.create_structure(data_structure_name=args.structure, data_file_name=args.datafile)
 
 def update_structure(odoosync, args):
-    #print("update was chosen")
     print("WARNING: updating an existing data structure isn't implemented yet")
     return False
-    odoosync.update_structure(data_structure_name=args.structure, data_file_name=args.data_file)
+    odoosync.update_structure(data_structure_name=args.structure, data_file_name=args.datafile)
 
 def scaffold_credentials(odoosync, args):
-    #print("WARNING: export example credentials to example_credentials.json is not implemented yet ;)")
     odoosync.write_scaffold_credentials(cred_file_name='example_credentials.json')
     exit()
 
@@ -749,10 +786,8 @@ def main():
     parser.add_argument("-r", "--read-only", action="store_true", 
                         help="do not send / update data to Odoo, just simulate, data can be read.")
     parser.add_argument("-c", "--credentials-file", action="store", default='default_credentials.json',
-                        help="specify the json file to read credentials from, defaults to default_credentials.json")
-    parser.add_argument("-d", "--data-file", action="store", default='default_data_structure.json',
-                        help="specify the json file to read or write the data structure to / from, defaults to "
-                        "default_data_structure.json")
+                        help="specify the json file to read credentials from, defaults to "
+                        "default_credentials.json")
     parser.add_argument("-v", "--verbosity", action="count", default=0,
                         help="increase verbosity to show the successful steps (v), more details (vv), "
                              "even more details (vvv), everything (vvvv)")
@@ -761,18 +796,29 @@ def main():
     subparsers = parser.add_subparsers(title="command",
                         description="what the script should do",
                         help="the main command to define if a data structure should be exported from Odoo or "
-                            "if a new data structure should be created in Odoo or to scaffold a creentials file. "
-                            "use 'connection command --help' for command specific arguments")
+                            "if a new data structure should be created in Odoo or to scaffold a creentials "
+                            "file. use 'connection command --help' for command specific arguments")
 
     # arguments to export a data structure from Odoo and save it to the local json file
-    parser_export = subparsers.add_parser('export', help="this will search for a data structure identified by it's "
-                            "name and will read it recursively and store it in a json file")
-    parser_export.add_argument("connection", help="the name of a connection to be used; the detailed connection "
-                        "parameters must be stored in a file containing the connection details and credentials "
-                        "as a dictionary stored in a json format. use --credentials-file to use a specific file, "
-                        "otherwise a default file named default_credentials.json will be used. Use the command "
-                        "scaffold to output an example credentials file to example_credentials.json.")
-    parser_export.add_argument("structure", help="the name of the data structure to be exported from Odoo.")
+    parser_export = subparsers.add_parser('export', help="this will search for a data structure identified "
+                        "by it's name and will read it recursively and store it in a json file")
+    parser_export.add_argument("connection", help="the name of a connection to be used; the detailed "
+                        "connection parameters must be stored in a file containing the connection details "
+                        "and credentials as a dictionary stored in a json format. use --credentials-file to "
+                        "use a specific file, otherwise a default file named default_credentials.json will "
+                        "be used. Use the command scaffold to output an example credentials file to "
+                        "example_credentials.json.")
+    parser_export.add_argument("structure", nargs='*', help="the name(s) of the data structure to be "
+                        "exported from Odoo. Takes a number of names. Omit to export all data structures "
+                        "present, in which case '{}' in the data file name can be used as a placeholder for "
+                        "the structure's sanitized name.")
+    parser_export.add_argument("-d", "--datafile", action="store", default='default_data_structure.json',
+                        help="specify the json file to write the data structure to, defaults "
+                        "to default_data_structure.json. '{}' will be replaced with a sanitized structure "
+                        "name if more than one structure is being exported.")
+    parser_export.add_argument("-i", "--export-ilike", action="store_true",  default=False,
+                        help="yield all structures partially matching the given name. "
+                        "Default is a full match.")
     parser_export.add_argument("-m", "--export-meta", action="store_true",  default=False,
                         help="also export meta data")
     parser_export.add_argument("-n", "--export-no-import", action="store_true",  default=False,
@@ -781,23 +827,28 @@ def main():
 
     # arguments to create a data structure in Odoo using data from the local json file
     parser_create = subparsers.add_parser('create', help="this will read the data from the local json file "
-                            "and create a new data structure in Odoo recursively")
-    parser_create.add_argument("connection", help="the name of a connection to be used; the detailed connection "
-                        "parameters must be stored in a file containing the connection details and credentials "
-                        "as a dictionary stored in a json format. use --credentials-file to use a specific file, "
-                        "otherwise a default file named default_credentials.json will be used. Use the command "
-                        "scaffold to output an example credentials file to example_credentials.json.")
-    parser_create.add_argument("structure", help="the name of the data structure to be created in Odoo.")
+                        "and create a new data structure in Odoo recursively")
+    parser_create.add_argument("connection", help="the name of a connection to be used; the detailed "
+                        "connection parameters must be stored in a file containing the connection details "
+                        "and credentials as a dictionary stored in a json format. use --credentials-file to "
+                        "use a specific file, otherwise a default file named default_credentials.json will "
+                        "be used. Use the command scaffold to output an example credentials file to "
+                        "example_credentials.json.")
+    parser_create.add_argument("datafile", help="specify the json file to read the data structure from.")
+    parser_create.add_argument("structure", help="the name of the data structure to be created in Odoo. "
+                        "Note that there must not be a data structure with the same name already.")
     parser_create.set_defaults(func=create_structure, init_api=True)
 
     # arguments to update a data structure in Odoo using data from the local json file
     parser_update = subparsers.add_parser('update', help="this will read the data from the local json file "
-                            "and update an existing data structure in Odoo recursively")
-    parser_update.add_argument("connection", help="the name of a connection to be used; the detailed connection "
-                        "parameters must be stored in a file containing the connection details and credentials "
-                        "as a dictionary stored in a json format. use --credentials-file to use a specific file, "
-                        "otherwise a default file named default_credentials.json will be used. Use the command "
-                        "scaffold to output an example credentials file to example_credentials.json.")
+                        "and update an existing data structure in Odoo recursively")
+    parser_update.add_argument("connection", help="the name of a connection to be used; the detailed "
+                        "connection parameters must be stored in a file containing the connection details "
+                        "and credentials as a dictionary stored in a json format. use --credentials-file to "
+                        "use a specific file, otherwise a default file named default_credentials.json will "
+                        "be used. Use the command scaffold to output an example credentials file to "
+                        "example_credentials.json.")
+    parser_update.add_argument("datafile", help="specify the json file to read the data structure from.")
     parser_update.add_argument("structure", help="the name of the data structure to be updated in Odoo.")
     parser_update.set_defaults(func=update_structure, init_api=True)
 
@@ -812,15 +863,15 @@ def main():
 
     if args.credentials_file and args.verbosity > 1:
         print(f"INFO: will use credentials file {args.credentials_file}")
-    if args.data_file and args.verbosity > 1:
-        print(f"INFO: will use data file {args.data_file}")
+    if args.datafile and args.verbosity > 1:
+        print(f"INFO: will use data file {args.datafile}")
 
 
     # execute the requested command
     if 'func' in args:
         # init the sync object
         odoosync = DataStructureSync(cred_file_name=args.credentials_file or 'default_credentials.json', 
-                        data_file_name=args.data_file or 'default_data_structure.json', 
+                        data_file_name=args.datafile or 'default_data_structure.json', 
                         verbosity=args.verbosity, readonly=args.read_only)
         if args.init_api:
             # load api and init
