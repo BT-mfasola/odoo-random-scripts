@@ -156,7 +156,7 @@ class RestAPI:
         return response
 
     def execute(self, endpoint, type="GET", data={}, json_data={}):
-        if self.verbosity > 1:
+        if self.verbosity > 2:
             print('json data:')
             print(json.dumps(data, indent=2))
         if self.auth_type == "oauth2":
@@ -434,7 +434,8 @@ class DataStructureSync:
             print("INFO: Initialize API and authenticate")
         self.odoo_api = RestAPI(auth_type=self.auth_type, headers={}, client_id=self.client_id, 
                         client_secret=self.client_secret, base_url=self.base_url, 
-                        token_url=self.token_url, verbosity=self.verbosity, readonly=self.readonly)
+                        token_url=self.token_url, readonly=self.readonly,
+                        verbosity=(self.verbosity if self.verbosity > 2 else 0))
         #self.odoo_api._get_access_token() # this is just for testing different libraries
         self.odoo_api.authenticate()
 
@@ -455,14 +456,13 @@ class DataStructureSync:
             'domain': json.dumps(domain),
             'fields': json.dumps(['name']),
         }
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
             pprint(data)
         response = self.odoo_api.execute('search_read', type="GET", data=data)
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Response:")
             pprint(response)
         for r in response:
-            pprint(r)
             structure = r.get('name', '')
             file_name = re.sub(r'[^0-9a-zA-Z]',r'',structure)
             if data_file_name:
@@ -504,10 +504,10 @@ class DataStructureSync:
             'fields': json.dumps(data_structure_fields_export),
             'limit': 1
         }
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
             pprint(data)
         response = self.odoo_api.execute('search_read', type="GET", data=data)
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Response:")
             pprint(response)
         if response:
@@ -524,8 +524,9 @@ class DataStructureSync:
             # get all language mappings on the generators
             language_mappings = {}
             for generator_id in generator_structures:
-                mapping_ids = generator_structures[generator_id]['lang_mapping_ids']
-                print(f"checking generator {generator_id} for languge mappings and found {mapping_ids}")
+                mapping_ids = generator_structures[generator_id].get('lang_mapping_ids', [])
+                if self.verbosity > 2:
+                    print(f"checking generator {generator_id} for language mappings and found {mapping_ids}")
                 if mapping_ids:
                     language_mappings.update(self.read_language_mappings(
                             mapping_ids = mapping_ids, fields = language_mapping_fields_export))
@@ -539,21 +540,23 @@ class DataStructureSync:
             data_structure['parser_structures'] = parser_structures
 
         else:
-            if self.verbosity >= 1:
+            if self.verbosity > 1:
                 print('INFO: did not get any response, finishing')
 
         # write json
-        print("got the following data in the end")
-        pprint(data_structure)
+        if self.verbosity > 1:
+            print("got the following data in the end")
+            pprint(data_structure)
         with open(data_file_name, 'w') as data_structure_file:
             json.dump(data_structure, data_structure_file, indent=2)
-        print(f"INFO: the data structure {data_structure_name} "
-                "has been read and written to the file {data_file_name}")
+        if self.verbosity > 0:
+            print(f"INFO: the data structure {data_structure_name} "
+                  f"has been read and written to the file {data_file_name}")
 
 
     def read_generator_structure(self, generator_id=None, fields=[]):
         generator_structures = {}
-        if self.verbosity > 2:
+        if self.verbosity > 1:
             print(f"looking for and exporting the generate.data.structure with id {generator_id}")
         data = {
             'model': "generate.data.structure",
@@ -561,10 +564,10 @@ class DataStructureSync:
             'fields': json.dumps(fields),
             'limit': 1
         }
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
             pprint(data)
         response = self.odoo_api.execute('search_read', type="GET", data=data)
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Response:")
             pprint(response)
         if response:
@@ -580,7 +583,7 @@ class DataStructureSync:
 
     def read_language_mappings(self, mapping_ids=[], fields=[]):
         language_mappings = {}
-        if self.verbosity > 2:
+        if self.verbosity > 1:
             print(f"looking for and exporting the language.mapping with ids {mapping_ids}")
         if not mapping_ids:
             return {}
@@ -589,10 +592,11 @@ class DataStructureSync:
             'domain': json.dumps([['id', '=', mapping_ids]]),
             'fields': json.dumps(fields),
         }
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
+            print("json data:")
             pprint(data)
         response = self.odoo_api.execute('search_read', type="GET", data=data)
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Response:")
             pprint(response)
         if response:
@@ -604,7 +608,7 @@ class DataStructureSync:
 
     def read_parser_structure(self, parser_id=None, fields=[]):
         parser_structures = {}
-        if self.verbosity > 2:
+        if self.verbosity > 1:
             print(f"looking for and exporting the parse.data.structure with id {parser_id}")
         data = {
             'model': "parse.data.structure",
@@ -612,10 +616,11 @@ class DataStructureSync:
             'fields': json.dumps(fields),
             'limit': 1
         }
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
+            print("json data:")
             pprint(data)
         response = self.odoo_api.execute('search_read', type="GET", data=data)
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Response:")
             pprint(response)
         if response:
@@ -642,7 +647,7 @@ class DataStructureSync:
             data_structure = json.load(data_structure_file)
             if not data_structure:
                 raise Exception(f"ERROR: could not load data structure from file {data_file_name}. aborting.")
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print("Loaded data:")
             pprint(data_structure)
         if not 'data_structure' in data_structure:
@@ -681,7 +686,7 @@ class DataStructureSync:
             data_structure_values['name'] = data_structure_name
 
         # now create a new data structure in Odoo
-        if self.verbosity >= 1:
+        if self.verbosity > 1:
             print(f"now creating new data structure {data_structure_name} with the following values:")
             pprint(data_structure_values)
         data = {
@@ -692,15 +697,16 @@ class DataStructureSync:
         if response:
             print(f"Result: a new data structure has been created with id {response}")
         else:
-            print("WARNING: there seems to have been a problem")
+            print("WARNING: there seems to have been a problem creating the structure in Odoo, "
+                  "check the previous messages or increase verbosity.")
 
 
     def create_generator_tuple(self, generator_id=None, generator_structures={}, language_mappings={}):
-        if self.verbosity >= 3:
+        if self.verbosity > 2:
             print(f"create_generator_tuple: build generator {generator_id} "
                    "from {generator_structures.keys()}")
         if not generator_id or not generator_structures or not generator_id in generator_structures:
-            print("create_generator_tuple: missing data")
+            print(f"WARNING: create_generator_tuple: missing data for generator_id {generator_id}")
             return []
         # the simple fields are added as stored
         generator_structure = {k: v for k, v in generator_structures[generator_id].items() 
@@ -726,10 +732,10 @@ class DataStructureSync:
 
 
     def create_parser_tuple(self, parser_id=None, parser_structures = {}):
-        if self.verbosity >= 2:
+        if self.verbosity > 2:
             print(f"create_parser_tuple: build parser {parser_id} from {parser_structures.keys()}")
         if not parser_id or not parser_structures or not parser_id in parser_structures:
-            print("create_parser_tuple: missing data")
+            print(f"WARNING: create_parser_tuple: missing data for parser_id {parser_id}")
             return []
         # the simple fields are added as stored
         parser_structure = {k: v for k, v in parser_structures[parser_id].items() 
@@ -789,8 +795,9 @@ def main():
                         help="specify the json file to read credentials from, defaults to "
                         "default_credentials.json")
     parser.add_argument("-v", "--verbosity", action="count", default=0,
-                        help="increase verbosity to show the successful steps (v), more details (vv), "
-                             "even more details (vvv), everything (vvvv)")
+                        help="the script by default only prints warnings and errors; increase verbosity to "
+                        "show the successfully exported structures (v), more details, like received data "
+                        "(vv), even more details like also sent payloads (vvv), everything (vvvv)")
 
     # add subparsers for individual functions: scaffold, export, create, update
     subparsers = parser.add_subparsers(title="command",
@@ -855,7 +862,7 @@ def main():
     # scaffold a new example credentials file
     parser_scaffold = subparsers.add_parser('scaffold', help="export an example credentials file to "
                         "example_credentials.json")
-    parser_scaffold.set_defaults(func=scaffold_credentials, init_api=False)
+    parser_scaffold.set_defaults(func=scaffold_credentials, init_api=False, datafile=None)
 
 
     # parse the arguments
